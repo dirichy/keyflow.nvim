@@ -53,6 +53,12 @@ local function reset_maps()
   mode_mod._reset()
   delmap("i", "<Tab>")
   delmap("n", "z")
+  delmap("n", "zj")
+  delmap("n", "zk")
+  delmap("n", "zq")
+  delmap("n", "z<C-x>")
+  delmap("n", "z<C-A>")
+  delmap("n", "m<C-A>")
 end
 
 test("processor first step accepts", function()
@@ -133,22 +139,26 @@ test("processor function action", function()
   eq(vim.api.nvim_get_current_line(), "fn")
 end)
 
-test("submode body enters and escape exits", function()
+test("submode body plus head enters and escape exits", function()
   reset_maps()
   reset_buffer()
   local entered = 0
   local exited = 0
+  local count = 0
 
   keyflow.mode({
     mode = "n",
     body = "z",
-    heads = {},
+    heads = {
+      j = function() count = count + 1 end,
+    },
     on_enter = function() entered = entered + 1 end,
     on_exit = function() exited = exited + 1 end,
   })
 
-  feed("z")
+  feed("zj")
   eq(entered, 1)
+  eq(count, 1)
   assert(keyflow.active() ~= nil)
 
   feed("<Esc>")
@@ -170,18 +180,59 @@ test("submode hint opens and closes with mode", function()
     },
   })
 
-  feed("z")
+  feed("zj")
   wait_for(function()
     return #hint_windows() == 1
   end)
 
   local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(hint_windows()[1]), 0, -1, false)
   assert(table.concat(lines, "\n"):find("scroll down", 1, true) ~= nil)
+  eq(vim.api.nvim_win_get_config(hint_windows()[1]).anchor, "SW")
 
   feed("<Esc>")
   wait_for(function()
     return #hint_windows() == 0
   end)
+end)
+
+test("submode hint keeps special keys readable and aligned", function()
+  reset_maps()
+  reset_buffer()
+
+  keyflow.mode({
+    mode = "n",
+    body = "z",
+    heads = {
+      j = { action = "<C-e>", desc = "down" },
+      ["<C-A>"] = { action = "<C-A>", desc = "increment by count with a long enough label to force one column" },
+    },
+  })
+
+  feed("zj")
+  wait_for(function()
+    return #hint_windows() == 1
+  end)
+
+  local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(hint_windows()[1]), 0, -1, false)
+  local text = table.concat(lines, "\n")
+  assert(text:find("<C%-A>", 1, false) ~= nil)
+  assert(text:find("<lt>", 1, true) == nil)
+
+  local j_line
+  local ctrl_a_line
+  for _, line in ipairs(lines) do
+    if line:find("down", 1, true) then
+      j_line = line
+    elseif line:find("increment", 1, true) then
+      ctrl_a_line = line
+    end
+  end
+
+  local j_col = j_line:find("down", 1, true)
+  local ctrl_a_col = ctrl_a_line:find("increment", 1, true)
+  eq(j_col, ctrl_a_col)
+
+  feed("<Esc>")
 end)
 
 test("submode hint can be disabled", function()
@@ -197,7 +248,7 @@ test("submode hint can be disabled", function()
     },
   })
 
-  feed("z")
+  feed("zj")
   vim.wait(50)
   eq(#hint_windows(), 0)
 end)
@@ -216,7 +267,7 @@ test("submode hint parses hydra key markup", function()
     },
   })
 
-  feed("z")
+  feed("zj")
   wait_for(function()
     return #hint_windows() == 1
   end)
@@ -328,7 +379,7 @@ test("submode exits on incompatible mode", function()
     heads = {},
   })
 
-  feed("zia<Esc>")
+  feed("zjia<Esc>")
   eq(keyflow.active(), nil)
   eq(vim.api.nvim_get_current_line(), "a")
 end)
@@ -349,6 +400,23 @@ test("submode special control key head", function()
   feed("z<C-x>")
   eq(count, 1)
   assert(keyflow.active() ~= nil)
+end)
+
+test("submode body alone falls through to native mapping", function()
+  reset_maps()
+  reset_buffer({ "abc" })
+
+  keyflow.mode({
+    mode = "n",
+    body = "m",
+    heads = {
+      ["<C-A>"] = function() end,
+    },
+  })
+
+  feed("ma")
+  eq(vim.api.nvim_buf_get_mark(0, "a"), { 1, 0 })
+  eq(keyflow.active(), nil)
 end)
 
 local failures = {}

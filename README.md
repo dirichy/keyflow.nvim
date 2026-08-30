@@ -63,9 +63,11 @@ keyflow.mode({
 })
 ```
 
-Press `z` to enter the transient mode. Matching heads are consumed and can be
-repeated. `<Esc>` exits. By default, a foreign key exits and is passed back to
-Neovim. A small native hint window opens while the transient mode is active and
+Press `z` plus any matching head, such as `zj`, to enter the transient mode and
+run that head. After entry, matching heads are consumed and can be repeated.
+Pressing the body alone is left for Neovim to handle normally. `<Esc>` exits.
+By default, a foreign key exits and is passed back to Neovim. A small native
+hint window opens at the bottom center while the transient mode is active and
 closes when the mode exits.
 
 Per-head configuration is also supported:
