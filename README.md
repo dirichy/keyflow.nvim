@@ -3,7 +3,7 @@
 Small, composable key-mapping primitives for Neovim input behavior.
 
 `keyflow.nvim` provides small input state machines plus a native floating hint
-for transient modes. It does not depend on `which-key.nvim`.
+for transient modes. 
 
 ## Requirements
 

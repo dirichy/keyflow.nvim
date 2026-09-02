@@ -1,173 +1,10 @@
 local M = {}
 
+vim.api.nvim_set_hl(0, "KeyflowHintKey", { default = true, link = "Special" })
+vim.api.nvim_set_hl(0, "KeyflowHintSep", { default = true, link = "Comment" })
+vim.api.nvim_set_hl(0, "KeyflowHintDesc", { default = true, link = "Identifier" })
 local ns = vim.api.nvim_create_namespace("keyflow.nvim.hint")
-local state = nil
-
-local function display_width(text)
-	return vim.fn.strdisplaywidth(text or "")
-end
-
-local function pad_right(text, width)
-	local padding = width - display_width(text)
-	if padding <= 0 then
-		return text
-	end
-
-	return text .. string.rep(" ", padding)
-end
-
-local function split_lines(text)
-	return vim.split(text, "\n", { plain = true })
-end
-
-local function head_desc(head)
-	if head.desc ~= nil then
-		return head.desc
-	end
-
-	if head.exit then
-		return "exit"
-	end
-
-	if type(head.action) == "string" then
-		return vim.fn.keytrans(vim.keycode(head.action))
-	end
-
-	return head.lhs
-end
-
-local function sorted_heads(heads)
-	local result = vim.tbl_values(heads)
-
-	table.sort(result, function(left, right)
-		return left.lhs < right.lhs
-	end)
-
-	return result
-end
-
-local function parse_markup(lines)
-	local parsed = {}
-	local marks = {}
-
-	for row, line in ipairs(lines) do
-		local output = {}
-		local row_marks = {}
-		local index = 1
-		local col = 0
-
-		while index <= #line do
-			local first, last = line:find("_(.-)_", index)
-
-			if first == nil then
-				local text = line:sub(index)
-				table.insert(output, text)
-				col = col + #text
-				break
-			end
-
-			local before = line:sub(index, first - 1)
-			local key = line:sub(first + 1, last - 1)
-
-			table.insert(output, before)
-			col = col + #before
-			table.insert(output, key)
-			table.insert(row_marks, {
-				start_col = col,
-				end_col = col + #key,
-			})
-			col = col + #key
-			index = last + 1
-		end
-
-		parsed[row] = table.concat(output)
-		marks[row] = row_marks
-	end
-
-	return parsed, marks
-end
-
-local function build_auto_lines(definition)
-	local heads = sorted_heads(definition.heads)
-	local key_width = display_width("<Esc>")
-	local desc_width = display_width("exit")
-
-	for _, head in ipairs(heads) do
-		key_width = math.max(key_width, display_width(head.lhs))
-		desc_width = math.max(desc_width, display_width(head_desc(head)))
-	end
-
-	local items = {}
-	for _, head in ipairs(heads) do
-		local key = pad_right(head.lhs, key_width)
-		local desc = pad_right(head_desc(head), desc_width)
-		table.insert(items, ("_%s_  %s"):format(key, desc))
-	end
-
-	table.insert(items, ("_%s_  %s"):format(pad_right("<Esc>", key_width), pad_right("exit", desc_width)))
-
-	local rendered_width = key_width + 2 + desc_width
-	local gap = 4
-	local max_width = math.max(vim.o.columns - 4, 20)
-	local columns = math.max(1, math.min(4, math.floor((max_width + gap) / (rendered_width + gap))))
-	local lines = {}
-
-	for index = 1, #items, columns do
-		local parts = {}
-
-		for offset = 0, columns - 1 do
-			local item = items[index + offset]
-			if item == nil then
-				break
-			end
-
-			if offset < columns - 1 and items[index + offset + 1] ~= nil then
-				item = pad_right(item, rendered_width + 2) .. string.rep(" ", gap - 2)
-			end
-
-			table.insert(parts, item)
-		end
-
-		table.insert(lines, table.concat(parts))
-	end
-
-	return parse_markup(lines)
-end
-
-local function build_custom_lines(definition)
-	local value = definition.hint
-
-	if type(value) == "function" then
-		value = value(definition)
-	end
-
-	if type(value) == "string" then
-		return parse_markup(split_lines(value))
-	end
-
-	if type(value) == "table" then
-		return parse_markup(value)
-	end
-
-	return build_auto_lines(definition)
-end
-
-local function set_highlights()
-	vim.api.nvim_set_hl(0, "KeyflowHintKey", { default = true, link = "Identifier" })
-	vim.api.nvim_set_hl(0, "KeyflowHintTitle", { default = true, link = "Title" })
-end
-
-local function apply_marks(buf, marks)
-	for row, row_marks in pairs(marks) do
-		for _, mark in ipairs(row_marks) do
-			vim.api.nvim_buf_set_extmark(buf, ns, row - 1, mark.start_col, {
-				end_col = mark.end_col,
-				hl_group = "KeyflowHintKey",
-			})
-		end
-	end
-end
-
+local state
 function M.close()
 	if state == nil then
 		return
@@ -183,58 +20,101 @@ function M.close()
 
 	state = nil
 end
-
-function M.show(definition, is_active)
-	vim.schedule(function()
-		if is_active ~= nil and not is_active(definition) then
-			return
-		end
-
-		M.close()
-
-		local lines, marks = build_custom_lines(definition)
-		if #lines == 0 then
-			return
-		end
-
-		set_highlights()
-
-		local width = 1
-		for _, line in ipairs(lines) do
-			width = math.max(width, display_width(line))
-		end
-
-		width = math.min(width, math.max(vim.o.columns - 4, 1))
-
-		local buf = vim.api.nvim_create_buf(false, true)
-		pcall(vim.api.nvim_buf_set_name, buf, "keyflow://hint")
-		vim.bo[buf].bufhidden = "wipe"
-		vim.bo[buf].modifiable = true
-		vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-		apply_marks(buf, marks)
-		vim.bo[buf].modifiable = false
-
-		local win = vim.api.nvim_open_win(buf, false, {
-			relative = "editor",
-			anchor = "SW",
-			row = vim.o.lines - vim.o.cmdheight - 2,
-			col = math.max(0, math.floor((vim.o.columns - width) / 2)),
-			width = width,
-			height = #lines,
-			style = "minimal",
-			border = "rounded",
-			title = definition.name or "keyflow",
-			title_pos = "center",
-			focusable = false,
-			noautocmd = true,
-		})
-
-		vim.wo[win].winhl = "FloatTitle:KeyflowHintTitle"
-		state = {
-			buf = buf,
-			win = win,
+local function generate_hint(mode, width, sep, gap)
+	local maps = mode.maps
+	sep = sep or " ↦ "
+	gap = gap or 2
+	local lines = {}
+	local marks = {}
+	local max_key_width = 1
+	local max_desc_width = 1
+	for lhs, rhs in pairs(maps) do
+		max_key_width = math.max(#lhs, max_key_width)
+		max_desc_width = math.max(#rhs.desc, max_desc_width)
+	end
+	if not width then
+		width = vim.o.columns
+	end
+	local line_term = math.floor((width + gap) / (max_key_width + max_desc_width + #sep + gap))
+	local line = ""
+	local index = 1
+	for lhs, rhs in pairs(maps) do
+		marks[#marks + 1] = { #lines, #line, #line + max_key_width, "KeyflowHintKey" }
+		marks[#marks + 1] = { #lines, #line + max_key_width, #line + max_key_width + #sep, "KeyflowHintSep" }
+		marks[#marks + 1] = {
+			#lines,
+			#line + max_key_width + #sep,
+			#line + max_key_width + #sep + max_desc_width,
+			"KeyflowHintDesc",
 		}
-	end)
+		line = line
+			.. string.rep(" ", max_key_width - #lhs)
+			.. lhs
+			.. sep
+			.. rhs.desc
+			.. string.rep(" ", max_desc_width - #rhs.desc)
+		if index % line_term == 0 then
+			lines[#lines + 1] = line
+			line = ""
+		else
+			line = line .. string.rep(" ", gap)
+		end
+		index = index + 1
+	end
+	lines[#lines + 1] = line
+	return lines, marks
 end
 
+--- Show hint for a mode
+---@param mode Keyflow.Mode
+function M.show(mode)
+	M.close()
+	local lines, marks
+	if mode.hint == true then
+		lines, marks = generate_hint(mode)
+	elseif type(mode.hint) == "table" then
+		lines = mode.hint.lines or mode.hint
+		marks = mode.hint.marks or {}
+	elseif type(mode.hint) == "function" then
+		lines, marks = mode:hint()
+	end
+	local width = vim.fn.strdisplaywidth(mode.name)
+	for _, line in ipairs(lines) do
+		width = math.max(width, vim.fn.strdisplaywidth(line))
+	end
+
+	width = math.min(width, math.max(vim.o.columns, 1))
+
+	local buf = vim.api.nvim_create_buf(false, true)
+	pcall(vim.api.nvim_buf_set_name, buf, "keyflow://hint")
+	vim.bo[buf].bufhidden = "wipe"
+	vim.bo[buf].modifiable = true
+	vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+	if marks then
+		for _, mark in ipairs(marks) do
+			vim.api.nvim_buf_set_extmark(buf, ns, mark[1], mark[2], { end_col = mark[3], hl_group = mark[4] })
+		end
+	end
+	vim.bo[buf].modifiable = false
+	local win = vim.api.nvim_open_win(buf, false, {
+		relative = "editor",
+		anchor = "SW",
+		row = vim.o.lines - vim.o.cmdheight,
+		col = math.max(0, math.floor((vim.o.columns - width) / 2)),
+		width = width,
+		height = #lines,
+		style = "minimal",
+		border = "rounded",
+		title = mode.name or "keyflow",
+		title_pos = "center",
+		focusable = false,
+		noautocmd = true,
+	})
+
+	vim.wo[win].winhl = "FloatTitle:KeyflowHintTitle"
+	state = {
+		buf = buf,
+		win = win,
+	}
+end
 return M

@@ -1,123 +1,117 @@
+local util = require("keyflow.util")
 local action = require("keyflow.action")
 local hint = require("keyflow.hint")
-local util = require("keyflow.util")
-
-local M = {}
-
-local ns = vim.api.nvim_create_namespace("keyflow.nvim")
-local installed = false
-local active = nil
-
-local valid_foreign_keys = {
-	pass = true,
-	consume = true,
-	exit = true,
-	["exit-and-pass"] = true,
-}
-
-local function canonical_input(key)
-	return vim.fn.keytrans(key)
-end
-
-local ESC = canonical_input(util.keycode("<Esc>"))
-
-local function normalize_head(lhs, spec)
-	local head = {
-		lhs = lhs,
-		key = canonical_input(util.keycode(lhs)),
-	}
-
-	if type(spec) == "string" or type(spec) == "function" or spec == nil then
-		head.action = spec
-		head.exit = false
-	elseif type(spec) == "table" then
-		head.action = spec.action
-		head.exit = spec.exit == true
-		head.desc = spec.desc
-	else
-		error("keyflow head must be a string, function, table, or nil")
+local function noop() end
+---@alias Keyflow.Mode.foreignPolicy "pass"|"exit"|"exit_and_pass"|"consume"
+---@alias Keyflow.Rhs {action:string|function,desc:string?}
+---@class Keyflow.Mode
+---@field name string name of the custom mode
+---@field vimmode string[] coresponding vim mode of the custom mode, usually "n"
+---@field trigger string? keymap used to enter the mode, if nil, keymap won't be set user should enter the mode manually.
+---@field lazy boolean if true, it will enter the mode by `trigger..lhs`, where lhs is the key of one of map in `maps`. if false, it will enter the mode by `trigger` alone.
+---@field maps table<string,Keyflow.Rhs> keymap of the mode. for now, only support single key.
+---@field hint boolean|string[]|{lines:string[],marks:table}|fun(self:Keyflow.Mode):string[],table whether to show hint.
+---@field foreign_policy Keyflow.Mode.foreignPolicy how to deal with keys not in `maps`.
+---@field on_enter fun(self:Keyflow.Mode)
+---@field on_exit fun(self:Keyflow.Mode)
+---@field on_key fun(self:Keyflow.Mode,key:string):string?
+---@field enter fun(self:Keyflow.Mode)
+---@field exit fun(self:Keyflow.Mode?)
+local Mode = { on_enter = noop, on_exit = noop, on_key = noop, foreign_policy = "exit_and_pass", lazy = true }
+Mode.__index = Mode
+local function normalize_vimmode(m)
+	if not m then
+		return { "n" }
 	end
-
-	return head
+	if type(m) == "string" then
+		return { m }
+	end
+	return m
 end
 
-local function normalize_heads(heads)
-	vim.validate("heads", heads, "table")
+local function normalize_rhs(rhs)
+	if type(rhs) == "table" then
+		return rhs
+	end
+	return { action = rhs, desc = type(rhs) == "string" and rhs or "lua function" }
+end
 
-	local normalized = {}
+local Mode_index = 0
 
-	for lhs, spec in pairs(heads) do
-		if type(lhs) == "number" then
-			vim.validate("heads[" .. lhs .. "]", spec, "table")
-
-			lhs = spec[1]
-			spec = spec[2] or {
-				action = spec.action,
-				exit = spec.exit,
-				desc = spec.desc,
-			}
+--- To create a mode
+---@param spec table
+---@return Keyflow.Mode
+function Mode.new(spec)
+	if not spec.trigger then
+		error("No enter key")
+	end
+	Mode_index = Mode_index + 1
+	---@type Keyflow.Mode
+	local result = vim.deepcopy(spec)
+	result.name = spec.name or ("KeyFlow Mode" .. tostring(Mode_index))
+	result.vimmode = normalize_vimmode(spec.vimmode)
+	if result.hint == nil then
+		result.hint = true
+	end
+	result.foreign_policy = spec.foreign_policy
+	result.maps = result.maps or {}
+	for lhs, rhs in pairs(result.maps) do
+		result.maps[lhs] = normalize_rhs(rhs)
+	end
+	setmetatable(result, Mode)
+	if result.lazy then
+		for lhs, rhs in pairs(result.maps) do
+			vim.keymap.set(result.vimmode, result.trigger .. lhs, function()
+				result:enter()
+				return result:feed(lhs)
+			end, {
+				desc = rhs.desc or result.name,
+				noremap = true,
+				-- silent = result.silent ~= false,
+				-- buffer = result.buffer,
+			})
 		end
-
-		vim.validate("head lhs", lhs, "string")
-
-		local head = normalize_head(lhs, spec)
-		normalized[head.key] = head
+	else
+		vim.keymap.set(result.vimmode, result.trigger, function()
+			result:enter()
+		end, {
+			desc = result.name,
+			noremap = true,
+			-- silent = result.silent ~= false,
+			-- buffer = result.buffer,
+		})
 	end
-
-	return normalized
+	return result
 end
 
-local function exit_current()
-	local current = active
+local ESC = "<Esc>"
+---@type Keyflow.Mode?
+local active_mode = nil
+
+function Mode.exit()
+	local current = active_mode
 	if current == nil then
 		return
 	end
-
-	active = nil
+	active_mode = nil
 	hint.close()
-
-	if current.on_exit ~= nil then
-		current.on_exit(current)
-	end
+	current:on_exit()
 end
 
-local function enter(definition)
-	if active ~= nil then
-		exit_current()
+function Mode:enter()
+	if active_mode ~= nil then
+		Mode.exit()
 	end
-
-	active = definition
-
-	if definition.on_enter ~= nil then
-		definition.on_enter(definition)
+	active_mode = self
+	if self.hint then
+		hint.show(self)
 	end
-
-	if definition.hint then
-		hint.show(definition, function()
-			return active == definition
-		end)
-	end
+	self:on_enter()
 end
 
-local function run_head(definition, head)
-	if definition.on_key ~= nil then
-		definition.on_key(head.lhs, definition)
-	end
-
-	if definition.mode == "n" then
-		action.normal(head.action)
-	else
-		action.run(head.action)
-	end
-
-	if head.exit then
-		exit_current()
-	end
-end
-
-local function dispatch(_, typed)
-	local current = active
-	if current == nil or action.is_running() then
+local function listener(key, typed)
+	local current = active_mode
+	if current == nil then
 		return nil
 	end
 
@@ -125,30 +119,54 @@ local function dispatch(_, typed)
 		return nil
 	end
 
-	local input = canonical_input(typed)
+	local input = vim.fn.keytrans(typed)
+	return current:feed(input)
+end
 
-	if not util.mode_matches(current.mode) then
-		exit_current()
+local ns = vim.api.nvim_create_namespace("keyflow.nvim")
+vim.on_key(listener, ns)
+
+--- feed a key to the mode processer
+---@param key string
+---@nodiscard
+---@return string?
+function Mode:feed(key)
+	local temp = self:on_key(key)
+	if temp and temp ~= "" then
+		action.run(temp)
+		return ""
+	end
+	if temp == "" then
+		return ""
+	end
+
+	if not util.mode_matches(self.vimmode) then
+		self:exit()
 		return nil
 	end
 
-	local head = current.heads[input]
+	local rhs = self.maps[key]
 
-	if head ~= nil then
-		run_head(current, head)
+	if rhs then
+		--TODO: need to read action.lua
+
+		-- if self.vimmode == "n" then
+		-- action.normal(rhs.action)
+		-- else
+		action.run(rhs.action)
+		-- end
+		-- if rhs.exit then
+		-- 	self:exit()
+		-- end
 		return ""
 	end
 
-	if current.on_key ~= nil then
-		current.on_key(input, current)
-	end
-
-	if input == ESC then
-		exit_current()
+	if key == ESC then
+		self:exit()
 		return ""
 	end
 
-	local policy = current.foreign_keys
+	local policy = self.foreign_policy
 
 	if policy == "pass" then
 		return nil
@@ -158,74 +176,14 @@ local function dispatch(_, typed)
 		return ""
 	end
 
-	exit_current()
-
 	if policy == "exit" then
+		self:exit()
 		return ""
 	end
 
-	return nil
-end
-
-local function ensure_listener()
-	if installed then
-		return
+	if policy == "exit_and_pass" then
+		self:exit()
+		return nil
 	end
-
-	vim.on_key(dispatch, ns)
-	installed = true
 end
-
-function M.mode(spec)
-	vim.validate("spec", spec, "table")
-	vim.validate("spec.mode", spec.mode, "string")
-	vim.validate("spec.body", spec.body, "string")
-
-	local foreign_keys = spec.foreign_keys or "exit-and-pass"
-
-	if not valid_foreign_keys[foreign_keys] then
-		error("invalid keyflow foreign_keys policy: " .. tostring(foreign_keys))
-	end
-
-	local definition = {
-		name = spec.name,
-		mode = spec.mode,
-		body = spec.body,
-		heads = normalize_heads(spec.heads or {}),
-		hint = spec.hint == nil and true or spec.hint,
-		foreign_keys = foreign_keys,
-		on_enter = spec.on_enter,
-		on_exit = spec.on_exit,
-		on_key = spec.on_key,
-	}
-
-	ensure_listener()
-
-	for _, head in pairs(definition.heads) do
-		vim.keymap.set(spec.mode, spec.body .. head.lhs, function()
-			enter(definition)
-			run_head(definition, head)
-		end, {
-			desc = head.desc or spec.desc or spec.name,
-			noremap = true,
-			silent = spec.silent ~= false,
-			buffer = spec.buffer,
-		})
-	end
-
-	return definition
-end
-
-M.enter = enter
-M.exit = exit_current
-
-function M.active()
-	return active
-end
-
-function M._reset()
-	active = nil
-	hint.close()
-end
-
-return M
+return Mode
