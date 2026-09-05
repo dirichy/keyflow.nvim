@@ -1,52 +1,66 @@
 local M = {}
 
+function M.normalize_key(key)
+	return vim.fn.keytrans(vim.keycode(key))
+end
+
 function M.keycode(key)
-  if key == nil then
-    return nil
-  end
-  return vim.keycode(key)
+	if key == nil then
+		return nil
+	end
+	return vim.keycode(key)
 end
 
 function M.keytrans(key)
-  if key == nil then
-    return nil
-  end
-  return vim.fn.keytrans(key)
+	if key == nil then
+		return nil
+	end
+	return vim.fn.keytrans(key)
 end
 
 function M.split_keycodes(keys)
-  local result = {}
-  local index = 1
+	local result = {}
+	local index = 1
 
-  while index <= #keys do
-    local byte = keys:byte(index)
-    if byte == 0x80 and index + 2 <= #keys then
-      table.insert(result, keys:sub(index, index + 2))
-      index = index + 3
-    else
-      table.insert(result, keys:sub(index, index))
-      index = index + 1
-    end
-  end
+	while index <= #keys do
+		local byte = keys:byte(index)
+		if byte == 0x80 and index + 2 <= #keys then
+			table.insert(result, keys:sub(index, index + 2))
+			index = index + 3
+		else
+			table.insert(result, keys:sub(index, index))
+			index = index + 1
+		end
+	end
 
-  return result
+	return result
 end
 
 function M.mode_matches(expected)
-  if expected == nil then
-    return true
-  end
+	if expected == nil then
+		return true
+	end
 
-  local current = vim.api.nvim_get_mode().mode
-  local modes = type(expected) == "table" and expected or { expected }
+	local current = vim.api.nvim_get_mode().mode
+	local modes = type(expected) == "table" and expected or { expected }
 
-  for _, mode in ipairs(modes) do
-    if current == mode or current:sub(1, #mode) == mode then
-      return true
-    end
-  end
+	for _, mode in ipairs(modes) do
+		if current == mode or current:sub(1, #mode) == mode then
+			return true
+		end
+	end
 
-  return false
+	return false
+end
+
+function M.feed_key(key)
+	local keys = vim.keycode(key)
+	local ok, result = pcall(vim.api.nvim_feedkeys, keys, "n", false)
+	if not ok then
+		vim.notify(tostring(result), vim.log.levels.WARN)
+	end
+
+	return result
 end
 
 return M
