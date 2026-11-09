@@ -78,6 +78,7 @@ function M.show(mode)
 	elseif type(mode.hint) == "function" then
 		lines, marks = mode:hint()
 	end
+	lines = lines or {}
 	local width = vim.fn.strdisplaywidth(mode.name)
 	for _, line in ipairs(lines) do
 		width = math.max(width, vim.fn.strdisplaywidth(line))

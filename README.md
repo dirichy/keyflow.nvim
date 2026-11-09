@@ -2,14 +2,14 @@
 
 Small, composable key-mapping primitives for Neovim input behavior.
 
-`keyflow.nvim` provides small input state machines plus a native floating hint
-for transient modes. 
+`keyflow.nvim` provides conditional mappings and transient modes with a native
+floating hint.
 
 ## Requirements
 
 Neovim 0.12 or newer.
 
-## Processor Mappings
+## Conditional mappings
 
 ```lua
 local keyflow = require("keyflow")
@@ -39,69 +39,41 @@ keyflow.map("i", "<Tab>", {
 Steps run in array order. The first accepted step executes and stops the chain.
 If no step accepts, the original key is returned as the fallback.
 
-## Transient Mode
-
-The following reproduces a small `hydra.nvim` "Move Screen" configuration:
+## Transient mode
 
 ```lua
 local keyflow = require("keyflow")
 
 keyflow.mode({
   name = "Move Screen",
-  mode = "n",
-  body = "z",
-  heads = {
-    l = "zl",
-    h = "zh",
-    L = "zL",
-    H = "zH",
-    j = "<C-e>",
-    k = "<C-y>",
-    J = "<C-d>",
-    K = "<C-u>",
+  vimmode = "n",
+  trigger = "z",
+  maps = {
+    j = { action = "<C-e>", desc = "scroll down" },
+    k = { action = "<C-y>", desc = "scroll up" },
+    q = { action = function(mode) mode:exit() end, desc = "quit" },
   },
 })
 ```
 
-Press `z` plus any matching head, such as `zj`, to enter the transient mode and
-run that head. After entry, matching heads are consumed and can be repeated.
-Pressing the body alone is left for Neovim to handle normally. `<Esc>` exits.
-By default, a foreign key exits and is passed back to Neovim. A small native
-hint window opens at the bottom center while the transient mode is active and
-closes when the mode exits.
+`trigger` plus a key in `maps` enters the mode and runs that action. Matching
+keys can then be repeated. Once entered, the mode reads keys exclusively until
+it exits; existing normal-mode mappings do not compete with its maps. `<Esc>`
+exits by default. A foreign key exits and is passed back to Neovim by default.
 
-Per-head configuration is also supported:
+Each map value can be a string, a function, or a table with `action` and an
+optional `desc`. Set `lazy = false` to map `trigger` by itself and enter the
+mode before processing subsequent keys.
 
-```lua
-keyflow.mode({
-  name = "Move Screen",
-  mode = "n",
-  body = "z",
-  heads = {
-    j = { action = "<C-e>", exit = false, desc = "scroll down" },
-    q = { action = nil, exit = true, desc = "quit" },
-  },
-  foreign_keys = "exit-and-pass",
-  hint = true,
-  on_enter = function() end,
-  on_exit = function() end,
-  on_key = function(key) end,
-})
-```
+Supported `foreign_policy` values are `"pass"`, `"consume"`, `"exit"`, and
+`"exit_and_pass"`. `count_mode` can be `false`, `true`, or `"repeat"`.
 
-Set `hint = false` to disable the floating hint for a mode. `hint` may also be
-a string or a function returning a string/table of lines when you want to render
-custom hint text. In custom hint text, `_key_` markup is rendered as a
-highlighted key, similar to `hydra.nvim`.
+Set `hint = false` to disable the floating hint. A table such as
+`{ lines = { "j: down" }, marks = {} }` can provide custom lines and extmarks;
+a function may return `lines, marks`.
 
-Supported `foreign_keys` policies:
-
-```lua
-"pass"
-"consume"
-"exit"
-"exit-and-pass"
-```
+The active mode is available through `keyflow.active()`. Lifecycle callbacks
+are `on_enter`, `on_exit`, and `on_key`.
 
 ## Tests
 
